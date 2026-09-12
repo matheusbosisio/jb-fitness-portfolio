@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: jb-fitness
+    runtime: node
+    plan: free
+    region: ohio
+    buildCommand: corepack enable && pnpm install --frozen-lockfile && pnpm db:generate && pnpm db:deploy && pnpm build
+    startCommand: pnpm start --hostname 0.0.0.0
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: DATABASE_URL
+        sync: false
+      - key: CLOUDINARY_CLOUD_NAME
+        sync: false
+      - key: CLOUDINARY_API_KEY
+        sync: false
+      - key: CLOUDINARY_API_SECRET
+        sync: false
