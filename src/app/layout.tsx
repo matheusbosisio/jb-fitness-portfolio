@@ -1,3 +1,4 @@
+import { connection } from "next/server";
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
@@ -18,7 +19,8 @@ export const metadata: Metadata = {
   description: "Sistema de gestão de estoque e vendas da JB Fitness.",
 };
 
-export default function RootLayout({ children }: LayoutProps<"/">) {
+export default async function RootLayout({ children }: LayoutProps<"/">) {
+  await connection();
   return (
     <html
       lang="pt-BR"

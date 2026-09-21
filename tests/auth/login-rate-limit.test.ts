@@ -1,20 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { loginAccountKey, reserveLoginAttempt } from "../../src/features/auth/login-rate-limit";
 
-import { LoginRateLimiter } from "../../src/features/auth/login-rate-limit";
-
-test("bloqueia após cinco falhas dentro de quinze minutos", () => {
-  const limiter = new LoginRateLimiter();
-  for (let index = 0; index < 5; index += 1) limiter.recordFailure("origem", 1_000);
-  assert.equal(limiter.isBlocked("origem", 2_000), true);
-  assert.equal(limiter.isBlocked("outra-origem", 2_000), false);
+test("normalização usa a mesma chave sem armazenar identificador em texto puro", () => {
+  assert.equal(loginAccountKey(" Owner@Example.com "), loginAccountKey("owner@example.com"));
+  assert.match(loginAccountKey("owner"), /^[a-f0-9]{64}$/);
+  assert.notEqual(loginAccountKey("owner"), loginAccountKey("other"));
 });
 
-test("libera depois da janela ou após autenticação correta", () => {
-  const limiter = new LoginRateLimiter();
-  for (let index = 0; index < 5; index += 1) limiter.recordFailure("origem", 1_000);
-  assert.equal(limiter.isBlocked("origem", 1_000 + 15 * 60 * 1000), false);
-  limiter.recordFailure("origem", 2_000_000);
-  limiter.clear("origem");
-  assert.equal(limiter.isBlocked("origem", 2_000_001), false);
+test("falha de armazenamento impede a tentativa em vez de liberar acesso", async () => {
+  await assert.rejects(reserveLoginAttempt({
+    $queryRaw: async () => { throw new Error("database unavailable"); },
+    $executeRaw: async () => 0,
+  }, "owner"), /database unavailable/);
 });

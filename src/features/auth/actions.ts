@@ -1,8 +1,6 @@
 "use server";
 
 import { redirect } from "next/navigation";
-import { headers } from "next/headers";
-import { createHash } from "node:crypto";
 
 import { prisma } from "@/server/db/client";
 import {
@@ -11,14 +9,7 @@ import {
 } from "@/features/auth/password";
 import { createSession, deleteSession } from "@/features/auth/session";
 import { loginSchema, type LoginState } from "@/features/auth/validation";
-import { loginRateLimiter } from "@/features/auth/login-rate-limit";
-
-async function loginAttemptKey() {
-  const requestHeaders = await headers();
-  const forwardedFor = requestHeaders.get("x-forwarded-for")?.split(",")[0]?.trim();
-  const address = forwardedFor || requestHeaders.get("x-real-ip") || "local";
-  return createHash("sha256").update(address).digest("hex");
-}
+import { reserveLoginAttempt } from "@/features/auth/login-rate-limit";
 
 export async function login(
   _state: LoginState,
@@ -34,16 +25,17 @@ export async function login(
   }
 
   const { email, password } = parsed.data;
-  const attemptKey = await loginAttemptKey();
-  if (loginRateLimiter.isBlocked(attemptKey)) {
-    return { error: "Muitas tentativas de acesso. Aguarde 15 minutos e tente novamente." };
-  }
-
   try {
     const user = await prisma.user.findUnique({
       where: { email },
       select: { id: true, active: true, passwordHash: true },
     });
+
+    // Only persisted accounts create buckets: arbitrary names cannot grow the table.
+    // Key by stable user ID so aliases/renames cannot reset the password budget.
+    if (user && !await reserveLoginAttempt(prisma, user.id)) {
+      return { error: "Muitas tentativas de acesso. Aguarde 15 minutos e tente novamente." };
+    }
 
     const passwordMatches = await verifyPassword(
       user?.passwordHash ?? DUMMY_PASSWORD_HASH,
@@ -51,11 +43,9 @@ export async function login(
     );
 
     if (!user || !user.active || !passwordMatches) {
-      loginRateLimiter.recordFailure(attemptKey);
       return { error: "E-mail ou senha incorretos." };
     }
 
-    loginRateLimiter.clear(attemptKey);
     await createSession(user.id);
   } catch (error) {
     console.error("Falha ao autenticar usuário", error);

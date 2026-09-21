@@ -1,42 +1,36 @@
-const WINDOW_MS = 15 * 60 * 1000;
-const MAX_FAILURES = 5;
-const MAX_TRACKED_ORIGINS = 10_000;
+import { createHash } from "node:crypto";
 
-type Attempt = { failures: number; resetAt: number };
+export type LoginLimitDatabase = {
+  $queryRaw<T>(query: TemplateStringsArray, ...values: unknown[]): Promise<T>;
+  $executeRaw(query: TemplateStringsArray, ...values: unknown[]): Promise<number>;
+};
 
-export class LoginRateLimiter {
-  private attempts = new Map<string, Attempt>();
-
-  isBlocked(key: string, now = Date.now()) {
-    const attempt = this.attempts.get(key);
-    if (!attempt || attempt.resetAt <= now) {
-      if (attempt) this.attempts.delete(key);
-      return false;
-    }
-    return attempt.failures >= MAX_FAILURES;
-  }
-
-  recordFailure(key: string, now = Date.now()) {
-    if (!this.attempts.has(key) && this.attempts.size >= MAX_TRACKED_ORIGINS) {
-      for (const [storedKey, attempt] of this.attempts) {
-        if (attempt.resetAt <= now) this.attempts.delete(storedKey);
-      }
-      if (this.attempts.size >= MAX_TRACKED_ORIGINS) {
-        const oldestKey = this.attempts.keys().next().value;
-        if (oldestKey) this.attempts.delete(oldestKey);
-      }
-    }
-    const attempt = this.attempts.get(key);
-    if (!attempt || attempt.resetAt <= now) {
-      this.attempts.set(key, { failures: 1, resetAt: now + WINDOW_MS });
-      return;
-    }
-    attempt.failures += 1;
-  }
-
-  clear(key: string) {
-    this.attempts.delete(key);
-  }
+export function loginAccountKey(identifier: string) {
+  return createHash("sha256").update(identifier.trim().toLowerCase()).digest("hex");
 }
 
-export const loginRateLimiter = new LoginRateLimiter();
+// PostgreSQL serializes the conflicting UPSERTs. Reserve BEFORE checking a
+// password: concurrent requests, workers and restarts share the same budget.
+async function reserve(db: LoginLimitDatabase, key: string, limit: number, seconds: number) {
+  const rows = await db.$queryRaw<{ attempts: number }[]>`
+    INSERT INTO "login_attempts" ("key", "attempts", "reset_at")
+    VALUES (${key}, 1, statement_timestamp() + ${seconds} * interval '1 second')
+    ON CONFLICT ("key") DO UPDATE SET
+      "attempts" = CASE WHEN "login_attempts"."reset_at" <= statement_timestamp()
+        THEN 1 ELSE "login_attempts"."attempts" + 1 END,
+      "reset_at" = CASE WHEN "login_attempts"."reset_at" <= statement_timestamp()
+        THEN statement_timestamp() + ${seconds} * interval '1 second'
+        ELSE "login_attempts"."reset_at" END
+    WHERE "login_attempts"."reset_at" <= statement_timestamp()
+       OR "login_attempts"."attempts" < ${limit}
+    RETURNING "attempts"
+  `;
+  return rows.length === 1;
+}
+
+export async function reserveLoginAttempt(db: LoginLimitDatabase, identifier: string) {
+  // Callers pass a persisted user ID. No client-supplied IP or global bucket
+  // can reset this budget or lock unrelated accounts.
+  await db.$executeRaw`DELETE FROM "login_attempts" WHERE "reset_at" <= statement_timestamp()`;
+  return reserve(db, loginAccountKey(identifier), 5, 15 * 60);
+}
