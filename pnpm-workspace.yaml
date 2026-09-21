@@ -4,3 +4,7 @@ allowBuilds:
   prisma: true
   sharp: false
   unrs-resolver: false
+
+overrides:
+  'prisma>mysql2': '3.24.4'
+  '@prisma/config>deepmerge-ts': '8.0.2'
